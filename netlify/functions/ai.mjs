@@ -19,7 +19,7 @@ async function keyFor(code) {
 export default async (req) => {
   const apiKey = env("OPENROUTER_API_KEY");
   const url = new URL(req.url);
-  if (req.method === "GET") return json({ enabled: !!apiKey });
+  if (req.method === "GET") return json({ enabled: !!apiKey, model: env("OPENROUTER_MODEL") || "openai/gpt-4o-mini" });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (!apiKey) return json({ error: "AI is not set up yet. Add OPENROUTER_API_KEY in Netlify." }, 503);
 

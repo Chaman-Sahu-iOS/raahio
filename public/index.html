@@ -206,6 +206,13 @@ textarea{min-height:96px}
 .sheet h2{padding-right:48px}
 .composer textarea{resize:none}
 @media (max-width:420px){.ev .notes{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
+.vview{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:2px 12px;margin-top:8px;max-height:48vh;overflow:auto}
+.msg .vview{margin:8px -4px 0}
+.vv-g{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:10px 0 2px}
+.vview .li{padding:8px 0}
+.hav{width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-weight:700;display:grid;place-items:center;flex:none;font-size:13px}
+.link-inline{background:none;border:0;color:var(--accent);font:inherit;font-weight:600;padding:4px 2px;cursor:pointer}
+.docic{width:40px;height:48px;border-radius:8px;background:var(--bad-soft);color:var(--bad);font-size:11px;font-weight:800;display:grid;place-items:center;flex:none;letter-spacing:.03em}
 
 header.top{padding-top:calc(12px + env(safe-area-inset-top))}</style></head>
 <body><div id="root"></div>
@@ -285,8 +292,49 @@ var caps={artifact:null,sample:null,downloads:null,dictation:null,tts:null},sync
 function T(){return S.trips.filter(function(t){return t.id===S.activeTripId})[0]||S.trips[0]}
 function evTs(e){return ts(e.date,e.time)}
 function sorted(){return T().events.slice().sort(function(a,b){return evTs(a)-evTs(b)})}
-function log(msg){var t=T();t.log=t.log||[];t.log.unshift({t:Date.now(),msg:msg});if(t.log.length>300)t.log.length=300}
-function save(){S.updatedAt=Date.now();ls(LS,S);unsynced=true;scheduleSync()}
+/* ---------- history: who changed what, with undo ---------- */
+var COLLS=['events','checklist','reminders','budget','contacts','guides','places','routes','docs'],baseTrip=null,baseId=null,lastSaveT=0;
+function me(){return ls('yatra-user-name')||'Someone'}
+function tripCore(t){var c={};Object.keys(t).forEach(function(k){if(k!=='log')c[k]=t[k]});return JSON.stringify(c)}
+function resetBase(){var t=T();baseTrip=tripCore(t);baseId=t.id}
+function diffTrip(a,b){
+  var ch=[];
+  Object.keys(Object.assign({},a,b)).forEach(function(k){if(k==='log')return;
+    if(COLLS.indexOf(k)>=0){var A={},B={};(a[k]||[]).forEach(function(x){A[x.id]=x});(b[k]||[]).forEach(function(x){B[x.id]=x});
+      Object.keys(Object.assign({},A,B)).forEach(function(id){var ja=A[id]?JSON.stringify(A[id]):null,jb=B[id]?JSON.stringify(B[id]):null;if(ja!==jb)ch.push({c:k,id:id,b:A[id]?JSON.parse(ja):null,a:B[id]?JSON.parse(jb):null})});
+    }else{var ja2=JSON.stringify(a[k]),jb2=JSON.stringify(b[k]);if(ja2!==jb2)ch.push({f:k,b:a[k]===undefined?null:JSON.parse(ja2),a:b[k]===undefined?null:JSON.parse(jb2)})}
+  });return ch;
+}
+function mergePatch(old,nw){var out=old.slice();nw.forEach(function(p){var o=out.filter(function(x){return (p.c?x.c===p.c&&x.id===p.id:x.f===p.f)})[0];if(o)o.a=p.a;else out.push(p)});return out}
+function log(msg){var t=T();t.log=t.log||[];t.log.unshift({id:uid('h'),t:Date.now(),msg:msg,by:me()});if(t.log.length>300)t.log.length=300}
+function save(){
+  var t=T();
+  if(baseTrip&&baseId===t.id){var ch=diffTrip(JSON.parse(baseTrip),t);if(ch.length){t.log=t.log||[];var e=t.log[0];
+    if(e&&!e.patch&&e.t>=lastSaveT&&e.by===me())e.patch=ch;
+    else if(e&&e.patch&&!e.undone&&e.by===me()&&e.msg==='Edited journal'&&ch.every(function(p){return p.f==='notes'})&&Date.now()-e.t<10*60000){e.patch=mergePatch(e.patch,ch);e.t=Date.now()}
+    else{log(ch.every(function(p){return p.f==='notes'})?'Edited journal':'Edited trip');t.log[0].patch=ch}}}
+  (t.log||[]).forEach(function(e,i){if(i>=150&&e.patch)delete e.patch});
+  resetBase();lastSaveT=Date.now();
+  S.updatedAt=Date.now();ls(LS,S);unsynced=true;scheduleSync()
+}
+function chLabel(x){return x?(x.title||x.text||x.label||x.name||''):''}
+function chVal(k,v){if(k==='done')return v?'done':'not done';if(k==='status')return {todo:'to do',done:'done',skipped:'skipped'}[v]||v;if(k==='actual'||k==='est')return v==null?'–':rupee(v);if(v===null||v===undefined||v==='')return '–';var str=typeof v==='object'?JSON.stringify(v):String(v);return str.length>40?str.slice(0,40)+'…':str}
+var CHNAME={docs:'Document',events:'Plan step',checklist:'Checklist',reminders:'Reminder',budget:'Budget',contacts:'Contact',guides:'Guide',places:'Place',routes:'Route'};
+var FNAME={time:'time',date:'date',title:'title',notes:'notes',status:'status',done:'',text:'text',actual:'spent',est:'planned',phone:'phone',at:'time',remind:'reminder',place:'place',group:'list',label:'name',name:'name',priority:'priority',verify:'needs confirmation'};
+function descChange(p){
+  if(p.c){var n=CHNAME[p.c]||p.c;if(!p.b)return 'Added '+n.toLowerCase()+': '+chLabel(p.a);if(!p.a)return 'Removed '+n.toLowerCase()+': '+chLabel(p.b);
+    var ks=Object.keys(Object.assign({},p.a,p.b)).filter(function(k){return JSON.stringify(p.a[k])!==JSON.stringify(p.b[k])});
+    return n+' "'+chLabel(p.a)+'": '+ks.map(function(k){var lab=FNAME[k]!==undefined?FNAME[k]:k;return (lab?lab+' ':'')+chVal(k,p.b[k])+' → '+chVal(k,p.a[k])}).join(', ')}
+  return p.f==='notes'?'Journal edited':'Trip '+(FNAME[p.f]||p.f)+' changed';
+}
+function applyInverse(t,patch){patch.slice().reverse().forEach(function(p){
+  if(p.c){var arr=t[p.c]=t[p.c]||[],i=-1;arr.forEach(function(x,k){if(x.id===p.id)i=k});if(p.b===null){if(i>=0)arr.splice(i,1)}else{var val=JSON.parse(JSON.stringify(p.b));if(i>=0)arr[i]=val;else arr.push(val)}}
+  else{if(p.b===null)delete t[p.f];else t[p.f]=JSON.parse(JSON.stringify(p.b))}
+})}
+function laterConflict(e){var t=T();return e.patch.some(function(p){var cur;if(p.c){cur=(t[p.c]||[]).filter(function(x){return x.id===p.id})[0]||null}else cur=t[p.f]===undefined?null:t[p.f];return JSON.stringify(cur)!==JSON.stringify(p.a)})}
+function undoEntry(e){if(!e||!e.patch)return false;var t=T();applyInverse(t,e.patch);e.undone=true;log('Undid: '+e.msg);save();render();return true}
+function findEntry(id){return (T().log||[]).filter(function(e){return e.id===id})[0]}
+function lastMine(){return (T().log||[]).filter(function(e){return e.patch&&!e.undone&&e.by===me()&&e.msg.indexOf('Undid')!==0})[0]}
 /* ---------- web sync (Netlify function + Blobs) ---------- */
 function api(method,body){return fetch('/api/state?k='+encodeURIComponent(WK),{method:method,headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'}).then(function(r){return r.json().then(function(j){return {status:r.status,data:j}})})}
 function typing(){var ae=document.activeElement;return !!(ae&&/INPUT|TEXTAREA|SELECT/.test(ae.tagName))}
@@ -295,7 +343,7 @@ function webPull(){
   api('GET').then(function(res){var d=res.data;if(res.status!==200)throw new Error(d&&d.error||res.status);
     if(!d.state){if((S.updatedAt||0)>0){unsynced=true;pulling=false;webPush();return}webEmpty=true;setSync('synced');render();return}
     serverTs=d.updatedAt;
-    if(d.updatedAt>(S.updatedAt||0)){if(typing()||sheetOpen)return;S=d.state;ls(LS,S);unsynced=false;webEmpty=false;render();setSync('synced')}
+    if(d.updatedAt>(S.updatedAt||0)){if(typing()||sheetOpen)return;S=d.state;ls(LS,S);unsynced=false;webEmpty=false;resetBase();render();setSync('synced')}
     else if(d.updatedAt<(S.updatedAt||0)&&unsynced){pulling=false;webPush();return}
     else{unsynced=false;webEmpty=false;setSync('synced')}
   }).catch(function(){setSync('offline')}).then(function(){pulling=false});
@@ -304,7 +352,7 @@ function webPush(){
   if(!WK)return;if(pushing){pushAgain=true;return}pushing=true;setSync('busy');var snap=S.updatedAt;
   api('PUT',{base:serverTs,state:S}).then(function(res){
     if(res.status===200){serverTs=res.data.updatedAt;if(S.updatedAt===snap)unsynced=false;setSync(unsynced?'pending':'synced')}
-    else if(res.status===409&&res.data&&res.data.state){S=res.data.state;serverTs=res.data.updatedAt;ls(LS,S);unsynced=false;closeSheet();render();setSync('synced');toast('Someone else changed the trip a moment ago. You are now seeing their latest version; please redo your last change.',{sticky:true})}
+    else if(res.status===409&&res.data&&res.data.state){S=res.data.state;serverTs=res.data.updatedAt;ls(LS,S);resetBase();unsynced=false;closeSheet();render();setSync('synced');toast('Someone else changed the trip a moment ago. You are now seeing their latest version; please redo your last change.',{sticky:true})}
     else throw new Error('save failed');
   }).catch(function(){setSync('offline')}).then(function(){pushing=false;if(pushAgain){pushAgain=false;webPush()}});
 }
@@ -339,22 +387,20 @@ function trySync(){
 function capUse(){return Promise.resolve(null)}
 var AINAME='AI';
 function webSample(msgs,opts){
-  opts=opts||{};var tools=(opts.tools||[]),defs=tools.map(function(t){return {type:'function',function:{name:t.name,description:t.description,parameters:t.inputSchema||{type:'object',properties:{}}}}});
+  opts=opts||{};var tools=opts.tools||[];
+  var spec=tools.map(function(t){return '- '+t.name+': '+t.description+' Args: '+JSON.stringify((t.inputSchema&&t.inputSchema.properties)||{})}).join('\n');
   var messages=msgs.map(function(m){return {role:m.role,content:m.content}});
-  function step(i){
-    if(i>6)return Promise.resolve({text:'Done.'});
-    return fetch('/api/ai?k='+encodeURIComponent(WK),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:messages,tools:defs})}).then(function(r){return r.json().catch(function(){return {}}).then(function(d){
-      if(!r.ok)throw {code:r.status===429?'rate_limited':r.status===503?'not_granted':'error',message:d.error||('AI error '+r.status)};
-      var m=d.message||{content:''};messages.push({role:'assistant',content:m.content||null,tool_calls:m.tool_calls});
-      if(m.tool_calls&&m.tool_calls.length){
-        return m.tool_calls.reduce(function(p,tc){return p.then(function(){var tool=tools.filter(function(t){return t.name===(tc.function&&tc.function.name)})[0],out;
-          try{var args=JSON.parse((tc.function&&tc.function.arguments)||'{}');out=tool?String(tool.execute(args)):'Unknown tool'}catch(e){out='Error: '+e.message}
-          messages.push({role:'tool',tool_call_id:tc.id,content:out})})},Promise.resolve()).then(function(){return step(i+1)});
-      }
-      var text=m.content||'Done.';if(opts.onText)opts.onText({text:text});return {text:text};
-    })});
-  }
-  return step(0);
+  var last=messages[messages.length-1];
+  last.content+='\n\nOUTPUT FORMAT: Reply with ONLY one JSON object, no other text: {"reply":"short answer for the traveller","actions":[{"tool":"<name>","args":{...}}]}. Use an empty actions array when nothing needs to change or be shown. Available tools:\n'+spec;
+  return fetch('/api/ai?k='+encodeURIComponent(WK),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({messages:messages})}).then(function(r){return r.json().catch(function(){return {}}).then(function(d){
+    if(!r.ok)throw {code:r.status===429?'rate_limited':r.status===503?'not_granted':'error',message:d.error||('AI error '+r.status)};
+    var raw=(d.message&&d.message.content)||'',obj=null;
+    var txt=raw.replace(/```(?:json)?/gi,'');var a=txt.indexOf('{'),b=txt.lastIndexOf('}');
+    if(a>=0&&b>a){try{obj=JSON.parse(txt.slice(a,b+1))}catch(e){obj=null}}
+    if(!obj){if(!raw.trim())throw {code:'empty',message:'empty reply'};return {text:raw.trim()}}
+    var notes=[];(Array.isArray(obj.actions)?obj.actions:[]).slice(0,8).forEach(function(ac){var tool=tools.filter(function(t){return t.name===ac.tool})[0];if(!tool)return;try{tool.execute(ac.args||{})}catch(e){notes.push('Couldn\'t '+ac.tool.replace(/_/g,' ')+': '+e.message)}});
+    var text=(obj.reply||'Done.')+(notes.length?'\n'+notes.join('\n'):'');if(opts.onText)opts.onText({text:text});return {text:text};
+  })});
 }
 function initCaps(tries){
   if(WEB){caps.ready=true;if(WK){fetch('/api/ai').then(function(r){return r.json()}).then(function(d){if(d&&d.enabled){caps.sample=webSample;if(ui.tab==='assistant')render();if(vState.open)voiceRender()}}).catch(function(){})}if(WK){webPull();setInterval(function(){if(!unsynced&&!sheetOpen&&document.visibilityState==='visible')webPull();else if(unsynced&&syncStatus==='offline')webPush()},15000);document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')webPull()})}return}
@@ -413,6 +459,7 @@ function render(){
    (ui.tab!=='assistant'?'<button class="fab" data-act="voice-open" aria-label="Voice assistant" title="Voice assistant">'+I.mic+'</button>':'');
   setSync(syncStatus);
   if(ui.tab==='assistant'){var c=$('#chatend');if(c)c.scrollIntoView({block:'end'})}
+  if(typeof vState!=='undefined'&&vState.open&&vState.view)voiceRender();
   if(ui.tab==='plan'){var dz=$('.days'),on=$('.days button.on');if(dz&&on)dz.scrollLeft=on.offsetLeft-dz.clientWidth/2+on.clientWidth/2}
 }
 function go(tab,sub,hl){ui.tab=tab;ui.sub=sub||null;try{history.replaceState(null,'','#'+tab)}catch(e){location.hash=tab}render();window.scrollTo(0,0);if(hl)highlight(hl);saveUI()}
@@ -435,6 +482,9 @@ function vHome(){
   var ver=t.events.filter(function(e){return e.verify&&e.status==='todo'}).sort(function(a,b){return evTs(a)-evTs(b)});
   if(c.missed.length){h+='<section class="card"><h3>Not marked yet <span class="pill bad">'+c.missed.length+'</span></h3><div class="list">'+c.missed.slice(0,4).map(function(e){return miniEv(e,true)}).join('')+'</div>'+(c.missed.length>4?'<p class="tiny muted">Plus '+(c.missed.length-4)+' more in the Plan tab.</p>':'')+'</section>'}
   if(ver.length){h+='<section class="card"><h3>Needs confirmation <span class="pill verify">'+ver.length+'</span></h3><div class="list">'+ver.slice(0,5).map(function(e){return miniEv(e)}).join('')+'</div></section>'}
+  // tickets for today / next travel day
+  if(WEB&&(t.docs||[]).length){var td=istDate(n),nd2=c.next?c.next.date:td,tix=(t.docs||[]).filter(function(d){return d.kind==='ticket'&&(d.date===td||d.date===nd2)});
+    if(tix.length)h+='<section class="card"><h3>Tickets '+(tix[0].date===td?'for today':'for '+dayLabel(tix[0].date))+' <button class="link" data-act="more-sub" data-v="docs">All files</button></h3><div class="list">'+tix.map(function(d){return docCard(d,true)}).join('')+'</div></section>'}
   // routes for today (or first trip day before the trip)
   var rd=n<b.start?t.start:istDate(n),rts=(t.routes||[]).filter(function(r){return r.date===rd}).sort(function(a,b2){return a.time<b2.time?-1:1});
   if(rts.length){var nextR=rts.filter(function(r){return ts(r.date,r.time)>=n-30*60000})[0]||rts[rts.length-1];
@@ -449,6 +499,8 @@ function vHome(){
   // guide tip
   var g=guideById((c.cur&&c.cur.guide)||(c.next&&c.next.guide)||'');
   if(g){h+='<section class="card"><h3>Guide for this step <button class="link" data-act="guide" data-id="'+g.id+'">Open</button></h3><div class="small"><b>'+esc(g.title)+'</b></div><div class="guide-body small">'+guideHTML(g.body.split('\n').slice(0,4).join('\n'))+'</div></section>'}
+  var rl=(t.log||[]).filter(function(e){return e.patch}).slice(0,3);
+  if(rl.length)h+='<section class="card"><h3>Recent changes <button class="link" data-act="more-sub" data-v="log">History</button></h3><div class="list">'+rl.map(function(e){return '<div class="li"><div class="hav">'+esc((e.by||'?').charAt(0).toUpperCase())+'</div><div class="grow small"><b>'+esc(e.by||'Someone')+'</b> · '+esc(e.msg)+'<div class="tiny muted num">'+whenLabel(e.t)+(e.undone?' · undone':'')+'</div></div>'+(!e.undone&&e.id?'<button class="btn sm ghost" data-act="h-undo" data-id="'+e.id+'">Undo</button>':'')+'</div>'}).join('')+'</div></section>';
   // quick
   var ttd=(t.contacts||[]).filter(function(p){return /ttd/i.test(p.name)&&p.phone})[0];
   h+='<section class="card"><h3>Quick actions</h3><div class="btns">'+
@@ -516,10 +568,10 @@ function vChecklist(){
 }
 
 /* ---------- views: Assistant ---------- */
-var QUICK=['What should I do right now?','Am I ready for tomorrow?','What do I carry for the mundan?','Train is 1 hour late. Re-plan Day 1','Remind me to call the hotel at 6 PM today','Add ₹250 auto fare to expenses'];
+var QUICK=['Show my pending checklist','Show Day 2 plan','What should I do right now?','Am I ready for tomorrow?','What do I carry for the mundan?','Train is 1 hour late. Re-plan Day 1','Remind me to call the hotel at 6 PM today','Add ₹250 auto fare to expenses'];
 function vAssistant(){
   var h='<section class="card"><h3>Your yatra assistant <span class="pill '+(caps.sample?'ok':'')+'">'+(caps.sample?AINAME+' connected':caps.ready?'Offline guide':'Connecting…')+'</span></h3><p class="small muted" style="margin:0">Ask anything about the trip. It knows your plan, checklist, guides and the current time, and it can add reminders, events, checklist items and expenses for you.</p></section>';
-  h+='<div class="chat">'+(chat.length?chat.map(function(m){return '<div class="msg '+(m.role==='user'?'u':'a')+'">'+(m.role==='user'?esc(m.content):(m.content?md(m.content):'<span class="muted">Thinking…</span>'))+'</div>'}).join(''):'<div class="msg a">Namaste! I can tell you what\'s next, re-plan when something runs late, and keep your lists up to date. Try one of these:</div>')+'</div>';
+  h+='<div class="chat">'+(chat.length?chat.map(function(m){return '<div class="msg '+(m.role==='user'?'u':'a')+'">'+(m.role==='user'?esc(m.content):(m.content?md(m.content):'<span class="muted">Thinking…</span>')+viewHTML(m.view))+'</div>'}).join(''):'<div class="msg a">Namaste! I can tell you what\'s next, re-plan when something runs late, and keep your lists up to date. Try one of these:</div>')+'</div>';
   h+='<div class="chips">'+QUICK.map(function(q){return '<button class="chip" data-act="ask" data-v="'+esc(q)+'">'+esc(q)+'</button>'}).join('')+'</div>';
   h+='<form class="composer" data-form="ask"><button type="button" class="btn" data-act="voice-open" aria-label="Speak">'+I.mic+'</button><textarea id="askbox" placeholder="Message…" aria-label="Message"></textarea><button class="btn pri" type="submit" '+(busy?'disabled':'')+'>Send</button></form>'+(chat.length?'<button class="btn sm ghost" data-act="chat-clear" style="align-self:center">Clear conversation</button>':'')+'<div id="chatend"></div>';
   return h;
@@ -542,6 +594,7 @@ function buildContext(){
   var bud=t.budget.map(function(b){return b.id+' | '+b.label+': est '+(b.est||0)+', actual '+(b.actual==null?'-':b.actual)}).join('\n');
   var gd=(t.guides||[]).map(function(g){return '## '+g.title+'\n'+g.body}).join('\n\n');
   var rt=(t.routes||[]).map(function(r){return r.date+' '+r.time+' | '+r.title+' | '+pName(r.from)+' -> '+pName(r.to)+' | '+r.mode+(r.dist?' | '+r.dist:'')+(r.dur?' | '+r.dur:'')+(r.tips?' | '+r.tips:'')}).join('\n');
+  var dc=(t.docs||[]).map(function(d){return d.title+' | '+(d.kind||'')+' | '+(d.date||'')+' | PNR '+(d.pnr||'-')+' | '+(d.train||'')+' | seats/status '+(d.seats||'-')+(d.notes?' | '+d.notes:'')}).join('\n');
   var ct=(t.contacts||[]).map(function(p){return p.name+': '+(p.phone||'(not set)')+' '+(p.note||'')}).join('\n');
   return 'You are Yatra Saathi, a calm, practical travel assistant inside a trip-planning app. You help this family through their whole journey.\n'+
    'Current time (IST): '+whenLabel(n)+' ('+istDate(n)+' '+istTime(n)+').\n'+
@@ -549,10 +602,52 @@ function buildContext(){
    (c.cur?'Current step: '+c.cur.title+' ('+c.cur.time+')\n':'')+(c.next?'Next step: '+c.next.title+' at '+c.next.date+' '+c.next.time+'\n':'')+
    '\nRULES: Answer in under 120 words unless asked for more. Reply in the language the traveller used (Hindi, Hinglish or English). Use short bullets. Times in 12-hour IST. The baby\'s safety and comfort come first. '+
    'Use only the facts below; if something is not in the data or is marked needs-verification, say so plainly and suggest confirming (TTD helpline 155257). Never invent timings, fares or temple rules. '+
-   'When the traveller asks you to add, change, remind, tick or shift something, call the matching tool, then say briefly what you changed. Use event/checklist ids from the lists below.\n'+
-   '\nPLAN (id | date time | title | status | flags | notes):\n'+ev+'\n\nCHECKLIST NOT DONE:\n'+(cl||'(all done)')+'\n\nREMINDERS:\n'+(rem||'(none)')+'\n\nBUDGET (INR):\n'+bud+'\n\nROUTES:\n'+(rt||'(none)')+'\n\nCONTACTS:\n'+ct+'\n\nGUIDES:\n'+gd+'\n\nNOTES:\n'+(t.notes||'(none)');
+   'When the traveller asks you to add, change, remind, tick or shift something, call the matching tool, then say briefly what you changed. When they ask to see, show or list data (pending checklist, the day plan, reminders, budget, contacts, routes), call show_data and reply with one short sentence; do not repeat the list. Use event/checklist ids from the lists below.\n'+
+   '\nPLAN (id | date time | title | status | flags | notes):\n'+ev+'\n\nCHECKLIST NOT DONE:\n'+(cl||'(all done)')+'\n\nREMINDERS:\n'+(rem||'(none)')+'\n\nBUDGET (INR):\n'+bud+'\n\nROUTES:\n'+(rt||'(none)')+'\n\nTICKETS & DOCUMENTS:\n'+(dc||'(none)')+'\n\nCONTACTS:\n'+ct+'\n\nGUIDES:\n'+gd+'\n\nNOTES:\n'+(t.notes||'(none)');
+}
+/* ---------- data views (shown in chat and voice) ---------- */
+var pendingView=null;
+var VIEW_TYPES=['checklist','plan','reminders','budget','contacts','routes','next'];
+function normView(i){
+  var w=String(i.what||i.type||'').toLowerCase();if(VIEW_TYPES.indexOf(w)<0)w='checklist';
+  var v={type:w,filter:String(i.filter||'').toLowerCase(),date:i.date||'',group:i.group||''};
+  if((w==='plan'||w==='routes')&&!v.date&&w==='plan'){var c=ctx(),today=istDate(now());v.date=T().events.some(function(e){return e.date===today})?today:(c.next?c.next.date:today)}
+  return v;
+}
+function viewItems(v){
+  var t=T();
+  if(v.type==='checklist'){var it=t.checklist.slice();if(v.filter==='done')it=it.filter(function(x){return x.done});else if(v.filter!=='all')it=it.filter(function(x){return !x.done});if(v.group){var g=v.group.toLowerCase();it=it.filter(function(x){return x.group.toLowerCase().indexOf(g)>=0})}return it}
+  if(v.type==='plan')return sorted().filter(function(e){return e.date===v.date&&(v.filter==='pending'?e.status==='todo':true)});
+  if(v.type==='reminders'){var n=now();return allReminders().filter(function(r){return !r.done&&r.due>=n-60000}).slice(0,20)}
+  if(v.type==='budget')return t.budget;
+  if(v.type==='contacts')return t.contacts||[];
+  if(v.type==='routes')return (t.routes||[]).filter(function(r){return !v.date||r.date===v.date}).sort(function(a,b){return ts(a.date,a.time)-ts(b.date,b.time)});
+  return [];
+}
+function viewSummary(v){
+  var it=viewItems(v),n=it.length;
+  if(v.type==='checklist')return n?n+' '+(v.filter==='done'?'done':v.filter==='all'?'':'pending ')+'checklist item'+(n>1?'s':'')+'.':'Nothing pending on the checklist.';
+  if(v.type==='plan')return n?n+' step'+(n>1?'s':'')+' on '+dayLabel(v.date)+'.':'Nothing planned on '+dayLabel(v.date)+'.';
+  if(v.type==='reminders')return n?n+' upcoming reminder'+(n>1?'s':'')+'.':'No upcoming reminders.';
+  if(v.type==='budget'){var sp=0,es=0;it.forEach(function(b){sp+=Number(b.actual)||0;es+=Number(b.est)||0});return 'Spent '+rupee(sp)+' of '+rupee(es)+' planned.'}
+  if(v.type==='contacts')return n+' contacts.';
+  if(v.type==='routes')return n?n+' route'+(n>1?'s':'')+(v.date?' on '+dayLabel(v.date):'')+'.':'No routes saved.';
+  var c=ctx();return c.next?'Next: '+c.next.title+' at '+fmt12(c.next.time)+'.':'Nothing left on the plan.';
+}
+function viewHTML(v){
+  if(!v)return '';var it=viewItems(v),h='';
+  if(v.type==='checklist'){var groups=[];it.forEach(function(x){if(groups.indexOf(x.group)<0)groups.push(x.group)});
+    h=groups.map(function(g){return '<div class="vv-g">'+esc(g)+'</div>'+it.filter(function(x){return x.group===g}).map(function(x){return '<div class="li"><button class="chk '+(x.done?'on':'')+'" data-act="cl-toggle" data-id="'+x.id+'" aria-label="Toggle">'+(x.done?I.tick:'')+'</button><div class="grow small '+(x.done?'done-text':'')+'">'+esc(x.text)+'</div></div>'}).join('')}).join('')}
+  else if(v.type==='plan'){h='<div class="vv-g">'+esc(dayKind(v.date)+' · '+dayLabel(v.date))+'</div>'+it.map(function(e){var st=e.status;return '<div class="li"><button class="chk '+(st==='done'?'on':st==='skipped'?'skip':'')+'" data-act="ev-toggle" data-id="'+e.id+'" aria-label="Toggle">'+(st==='done'?I.tick:'')+'</button><div class="grow small"><b class="num">'+fmt12(e.time)+'</b> <span class="'+(st!=='todo'?'done-text':'')+'">'+esc(e.title)+'</span></div></div>'}).join('')}
+  else if(v.type==='reminders'){var n=now();h=it.map(function(r){return '<div class="li"><span class="muted">'+I.bell.replace('<svg','<svg width="16" height="16"')+'</span><div class="grow small">'+esc(r.text)+'<div class="tiny muted num">'+whenLabel(r.due)+' · in '+dur(r.due-n)+'</div></div></div>'}).join('')}
+  else if(v.type==='budget'){var sp=0,es=0;h='<table class="bt"><thead><tr><th>Item</th><th class="r">Plan</th><th class="r">Spent</th></tr></thead><tbody>'+it.map(function(b){sp+=Number(b.actual)||0;es+=Number(b.est)||0;return '<tr><td class="small">'+esc(b.label)+'</td><td class="r num small">'+(b.est?rupee(b.est):'–')+'</td><td class="r num small">'+(b.actual!=null&&b.actual!==''?rupee(b.actual):'–')+'</td></tr>'}).join('')+'<tr><td><b>Total</b></td><td class="r num"><b>'+rupee(es)+'</b></td><td class="r num"><b>'+rupee(sp)+'</b></td></tr></tbody></table>'}
+  else if(v.type==='contacts'){h=it.map(function(p){return '<div class="li"><div class="grow small"><b>'+esc(p.name)+'</b><div class="num">'+esc(p.phone||'No number')+'</div></div>'+(p.phone?'<a class="btn sm" href="tel:'+esc(p.phone.replace(/\s/g,''))+'">'+I.phone+'Call</a>':'')+'</div>'}).join('')}
+  else if(v.type==='routes'){h=it.map(function(r){return '<div class="li"><div class="grow small"><b class="num">'+dayLabel(r.date)+', '+fmt12(r.time)+'</b> '+esc(r.title)+'<div class="tiny muted">'+esc(pName(r.from,1)+' → '+pName(r.to,1)+(r.dist?' · '+r.dist:''))+'</div></div><a class="btn sm" href="'+dirLink(r)+'" target="_blank" rel="noopener">'+I.map+'Go</a></div>'}).join('')}
+  else{var c=ctx();h=(c.cur?'<div class="li"><div class="grow small"><b>Now</b> · '+esc(c.cur.title)+' <span class="muted num">'+fmt12(c.cur.time)+'</span></div></div>':'')+(c.next?'<div class="li"><div class="grow small"><b>Next</b> · '+esc(c.next.title)+' <span class="muted num">'+whenLabel(evTs(c.next))+'</span></div></div>':'')}
+  return '<div class="vview">'+(h||'<div class="small muted" style="padding:8px 0">Nothing to show.</div>')+'</div>';
 }
 var TOOLS=[
+ {name:'show_data',description:'Show the traveller a live list on screen. Use whenever they ask to see, list or check data. what: checklist | plan | reminders | budget | contacts | routes | next. filter for checklist: pending (default), done or all. date: YYYY-MM-DD for plan or routes. group: optional checklist group name.',inputSchema:{type:'object',properties:{what:{type:'string',enum:VIEW_TYPES},filter:{type:'string'},date:{type:'string'},group:{type:'string'}},required:['what']},execute:function(i){pendingView=normView(i);return 'Shown on screen: '+viewSummary(pendingView)}},
  {name:'add_reminder',description:'Add a reminder at a date-time (IST).',inputSchema:{type:'object',properties:{at:{type:'string',description:'YYYY-MM-DDTHH:MM in IST'},text:{type:'string'}},required:['at','text']},execute:function(i){if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(i.at))throw new Error('at must be YYYY-MM-DDTHH:MM');var t=T();t.reminders=t.reminders||[];t.reminders.push({id:uid('r'),at:i.at,text:i.text,done:false});log('Assistant added reminder: '+i.text);save();return 'Reminder added'}},
  {name:'add_event',description:'Add a step to the plan.',inputSchema:{type:'object',properties:{date:{type:'string',description:'YYYY-MM-DD'},time:{type:'string',description:'HH:MM 24h'},title:{type:'string'},notes:{type:'string'},category:{type:'string',enum:Object.keys(CAT)}},required:['date','time','title']},execute:function(i){T().events.push({id:uid('e'),date:i.date,time:i.time,title:i.title,notes:i.notes||'',cat:i.category||'task',place:'',priority:false,verify:false,remind:null,guide:'',status:'todo'});log('Assistant added step: '+i.title);save();return 'Event added'}},
  {name:'set_event_status',description:'Mark a plan step done, skipped or todo.',inputSchema:{type:'object',properties:{id:{type:'string'},status:{type:'string',enum:['done','skipped','todo']}},required:['id','status']},execute:function(i){var e=T().events.filter(function(x){return x.id===i.id})[0];if(!e)throw new Error('No event with that id');e.status=i.status;log('Assistant marked "'+e.title+'" '+i.status);save();return 'Updated'}},
@@ -568,12 +663,14 @@ function ask(q,onPart){
   q=(q||'').trim();if(!q||busy)return Promise.resolve('');
   chat.push({role:'user',content:q});
   var pend={role:'assistant',content:''};chat.push(pend);busy=true;render();
-  if(!caps.sample){pend.content=offline(q);busy=false;ss(CK,chat);render();return Promise.resolve(pend.content)}
+  pendingView=null;
+  if(!caps.sample){var lc0=localCommand(q);pend.content=lc0?(lc0.show||lc0.say):offline(q);if(lc0&&lc0.view)pend.view=lc0.view;busy=false;ss(CK,chat);render();return Promise.resolve(pend.content)}
   var hist=chat.slice(0,-1).slice(-12);while(hist.length&&hist[0].role!=='user')hist.shift();
   var msgs=hist.map(function(m){return {role:m.role,content:m.content||'…'}});
   msgs[msgs.length-1]={role:'user',content:buildContext()+'\n\nTRAVELLER: '+q};
-  return caps.sample(msgs,{tools:TOOLS,cache:false,onText:function(o){pend.content=o.text;if(onPart)onPart(o.text);var els=$$('.msg.a');var last=els[els.length-1];if(last)last.innerHTML=md(o.text||'')}}).then(function(r){pend.content=r.text||'Done.'}).catch(function(err){
-    var c=err&&err.code;pend.content=(c==='not_granted')?'The AI assistant isn\'t set up on this site yet. '+'Here is what the offline guide says:\n\n'+offline(q):(c==='rate_limited'?((err&&err.message)||'Too many questions in a short time. Wait a minute and ask again.'):'I couldn\'t reach the '+AINAME+' assistant just now'+(err&&err.message?' ('+err.message+')':'')+'. '+offline(q));
+  return caps.sample(msgs,{tools:TOOLS,cache:false,onText:function(o){pend.content=o.text;if(onPart)onPart(o.text);var els=$$('.msg.a');var last=els[els.length-1];if(last)last.innerHTML=md(o.text||'')}}).then(function(r){pend.content=r.text||'Done.';if(pendingView){pend.view=pendingView;pendingView=null}}).catch(function(err){
+    var c=err&&err.code;if(c==='empty'||c==='rate_limited'||c==='error'){var lc1=localCommand(q);if(lc1){pend.content=lc1.show||lc1.say;if(lc1.view)pend.view=lc1.view;return}}
+    pend.content=(c==='not_granted')?'The AI assistant isn\'t set up on this site yet. '+'Here is what the offline guide says:\n\n'+offline(q):(c==='rate_limited'?((err&&err.message)||'Too many questions in a short time. Wait a minute and ask again.'):'I couldn\'t reach the '+AINAME+' assistant just now'+(err&&err.message?' ('+err.message+')':'')+'. '+offline(q));
     if(c==='not_granted')caps.sample=null;
   }).then(function(){busy=false;ss(CK,chat);render();return pend.content});
 }
@@ -588,9 +685,9 @@ function offline(q){
 }
 
 /* ---------- views: More ---------- */
-var SUBS={map:['Map & routes',I.map,'Hotel, station, bus stand'],reminders:['Reminders',I.bell,'Alerts and calendar'],budget:['Budget',I.wallet,'Planned vs spent'],guides:['Guides',I.book,'Rules, mundan, darshan'],contacts:['Contacts',I.users,'Tap to call'],notes:['Journal',I.note,'Notes and memories'],log:['Activity',I.log,'Every change, tracked'],trips:['Trips',I.trips,'Switch or plan a new one'],settings:['Settings',I.gear,'Backup, preview time']};
+var SUBS={docs:['Tickets & docs',I.note,'View and download'],map:['Map & routes',I.map,'Hotel, station, bus stand'],reminders:['Reminders',I.bell,'Alerts and calendar'],budget:['Budget',I.wallet,'Planned vs spent'],guides:['Guides',I.book,'Rules, mundan, darshan'],contacts:['Contacts',I.users,'Tap to call'],notes:['Journal',I.note,'Notes and memories'],log:['History',I.log,'Who changed what · undo'],trips:['Trips',I.trips,'Switch or plan a new one'],settings:['Settings',I.gear,'Backup, preview time']};
 function vMore(){
-  if(ui.sub&&SUBS[ui.sub]){return '<div class="row"><button class="iconbtn" data-act="more-sub" data-v="" aria-label="Back">'+I.back+'</button><h2 class="grow" style="font-size:20px">'+SUBS[ui.sub][0]+'</h2></div>'+({map:vMap,reminders:vReminders,budget:vBudget,guides:vGuides,contacts:vContacts,notes:vNotes,log:vLog,trips:vTrips,settings:vSettings}[ui.sub])()}
+  if(ui.sub&&SUBS[ui.sub]){return '<div class="row"><button class="iconbtn" data-act="more-sub" data-v="" aria-label="Back">'+I.back+'</button><h2 class="grow" style="font-size:20px">'+SUBS[ui.sub][0]+'</h2></div>'+({docs:vDocs,map:vMap,reminders:vReminders,budget:vBudget,guides:vGuides,contacts:vContacts,notes:vNotes,log:vLog,trips:vTrips,settings:vSettings}[ui.sub])()}
   return '<div class="menu">'+Object.keys(SUBS).map(function(k){var s=SUBS[k];return '<button data-act="more-sub" data-v="'+k+'">'+s[1]+'<b>'+s[0]+'</b><span>'+s[2]+'</span></button>'}).join('')+'</div>';
 }
 function hubSVG(){
@@ -615,6 +712,39 @@ function routeCard(r){
    '<div class="small">'+esc(pName(r.from,1))+' → '+(r.via&&r.via.length?r.via.map(function(v){return esc(pName(v,1))+' → '}).join(''):'')+esc(pName(r.to,1))+'</div>'+
    '<div class="tiny muted">'+esc(m+(r.dist?' · '+r.dist:'')+(r.dur?' · '+r.dur:''))+'</div>'+(r.tips?'<div class="tiny" style="margin-top:3px">'+esc(r.tips)+'</div>':'')+
    '<div class="btns" style="margin-top:8px"><a class="btn sm pri" href="'+dirLink(r)+'" target="_blank" rel="noopener">'+I.map+'Directions</a><button class="btn sm ghost" data-act="rt-edit" data-id="'+r.id+'">'+I.edit+'Edit</button></div></div></div>';
+}
+function fileUrl(d,dl){return '/api/files?k='+encodeURIComponent(WK||'')+'&id='+encodeURIComponent(d.id)+'&name='+encodeURIComponent(d.name||'document')+(dl?'&dl=1':'')}
+function fmtSize(n){return n>1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB'}
+function docCard(d,compact){
+  var meta=[d.train,d.date?dayLabel(d.date):'',d.pnr?'PNR '+d.pnr:''].filter(Boolean).join(' · ');
+  return '<div class="li doc" data-hl="'+d.id+'"><div class="docic">'+(/pdf/.test(d.type||'')?'PDF':'IMG')+'</div><div class="grow"><div class="small"><b>'+esc(d.title||d.name)+'</b></div>'+(meta?'<div class="tiny num">'+esc(meta)+'</div>':'')+
+   (d.seats?'<div class="tiny"><b>Seats:</b> '+esc(d.seats)+'</div>':'')+(d.notes&&!compact?'<div class="tiny muted">'+esc(d.notes)+'</div>':'')+
+   (compact?'':'<div class="tiny muted">'+esc((d.name||'')+(d.size?' · '+fmtSize(d.size):'')+(d.by?' · added by '+d.by:''))+'</div>')+
+   '<div class="btns" style="margin-top:8px"><a class="btn sm pri" href="'+fileUrl(d)+'" target="_blank" rel="noopener">View</a><a class="btn sm" href="'+fileUrl(d,1)+'" download="'+esc(d.name||'document')+'">Download</a>'+(compact?'':'<button class="btn sm ghost" data-act="doc-edit" data-id="'+d.id+'">'+I.edit+'Edit</button>')+'</div></div></div>';
+}
+function vDocs(){
+  if(!WEB)return '<section class="card"><p class="small" style="margin:0">Tickets and documents are stored on the website version of the app (raahio.netlify.app).</p></section>';
+  var d=(T().docs||[]).slice().sort(function(a,b){return (a.date||'9')<(b.date||'9')?-1:1});
+  return '<section class="card"><h3>Add a ticket or document</h3><p class="small muted" style="margin:0 0 8px">PDF or photo, up to 5 MB. Everyone with your trip code can view and download it.</p><label class="btn pri" for="docfile">'+I.plus+'Upload file</label><input type="file" id="docfile" accept="application/pdf,image/*" hidden></section>'+
+   '<section class="card"><h3>Your files <span class="pill">'+d.length+'</span></h3><div class="list">'+(d.length?d.map(function(x){return docCard(x)}).join(''):'<div class="small muted">No files yet. Upload your train tickets here.</div>')+'</div></section>'+
+   '<p class="tiny muted">Tip: tap Download once while you have network, so the ticket is also saved on your phone.</p>';
+}
+function docSheet(doc,file){
+  var isNew=!!file;doc=doc||{title:file.name.replace(/\.[^.]+$/,''),kind:/ticket|ers|pnr/i.test(file.name)?'ticket':'doc',date:'',pnr:'',train:'',seats:'',notes:''};
+  sheet('<h2>'+(isNew?'Add details':'Edit document')+'</h2>'+(isNew?'<p class="small muted" style="margin:0">'+esc(file.name)+' · '+fmtSize(file.size)+'</p>':'')+
+   '<label class="f">Title<input type="text" id="d_title" value="'+esc(doc.title)+'" required></label>'+
+   '<div class="fgrid"><label class="f">Type<select id="d_kind"><option value="ticket"'+(doc.kind==='ticket'?' selected':'')+'>Ticket</option><option value="doc"'+(doc.kind!=='ticket'?' selected':'')+'>Other document</option></select></label><label class="f">Travel date<input type="date" id="d_date" value="'+esc(doc.date)+'"></label></div>'+
+   '<div class="fgrid"><label class="f">PNR / booking no.<input type="text" id="d_pnr" value="'+esc(doc.pnr)+'"></label><label class="f">Train / service<input type="text" id="d_train" value="'+esc(doc.train)+'"></label></div>'+
+   '<label class="f">Seats / status<input type="text" id="d_seats" value="'+esc(doc.seats)+'" placeholder="e.g. C1 61, 62"></label><label class="f">Notes<textarea id="d_notes" style="min-height:70px">'+esc(doc.notes)+'</textarea></label>'+
+   '<div class="btns"><button class="btn pri" type="submit">'+(isNew?'Upload':'Save')+'</button>'+(isNew?'':'<button class="btn ghost danger" type="button" data-act="doc-del" data-id="'+doc.id+'">Remove</button>')+'</div>',
+  function(f){
+    var d={title:v(f,'d_title').trim(),kind:v(f,'d_kind'),date:v(f,'d_date'),pnr:v(f,'d_pnr').trim(),train:v(f,'d_train').trim(),seats:v(f,'d_seats').trim(),notes:v(f,'d_notes').trim()};if(!d.title)return false;
+    if(!isNew){mutate(function(){Object.assign(doc,d)},'Edited document: '+d.title);return}
+    var id=uid('d');toast('Uploading '+file.name+'…');
+    fetch('/api/files?k='+encodeURIComponent(WK)+'&id='+id+'&name='+encodeURIComponent(file.name),{method:'PUT',headers:{'content-type':file.type||'application/pdf'},body:file}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||('Upload failed ('+r.status+')'));return j})}).then(function(j){
+      mutate(function(){var t=T();t.docs=t.docs||[];t.docs.push(Object.assign({id:id,name:file.name,type:file.type||'application/pdf',size:j.size||file.size,by:me(),t:Date.now()},d))},'Uploaded: '+d.title);toast('Uploaded')
+    }).catch(function(err){toast('Upload failed: '+err.message,{sticky:true})});
+  });
 }
 function vMap(){
   var t=T(),base=(t.places||[]).filter(function(p){return p.base})[0],rs=(t.routes||[]).slice().sort(function(a,b){return ts(a.date,a.time)-ts(b.date,b.time)}),dates=[];
@@ -683,7 +813,20 @@ function vContacts(){
   return '<section class="card"><div class="list">'+(t.contacts||[]).map(function(p){return '<div class="li" data-hl="'+p.id+'"><span class="muted" style="margin-top:2px">'+I.users.replace('<svg','<svg width="18" height="18"')+'</span><div class="grow" data-act="ct-edit" data-id="'+p.id+'" style="cursor:pointer"><b class="small">'+esc(p.name)+'</b><div class="small num">'+(p.phone?esc(p.phone):'<span class="muted">Add number</span>')+'</div><div class="tiny muted">'+esc(p.note||'')+'</div></div>'+(p.phone?'<a class="btn sm" href="tel:'+esc(p.phone.replace(/\s/g,''))+'">'+I.phone+'Call</a>':'')+'</div>'}).join('')+'</div></section><button class="btn" data-act="ct-new">'+I.plus+'New contact</button>';
 }
 function vNotes(){return '<section class="card"><p class="small muted" style="margin-top:0">Write anything: booking numbers you want handy, things to remember next time, moments from the trip.</p><textarea id="notesbox" style="min-height:260px" aria-label="Journal">'+esc(T().notes||'')+'</textarea><div class="tiny muted" id="notesst" style="margin-top:6px">Saves as you type.</div></section>'}
-function vLog(){var l=T().log||[];return '<section class="card"><div class="list">'+(l.length?l.map(function(x){return '<div class="li"><div class="grow small">'+esc(x.msg)+'</div><div class="tiny muted num" style="white-space:nowrap">'+whenLabel(x.t)+'</div></div>'}).join(''):'<div class="small muted">No changes yet.</div>')+'</div></section>'}
+function vLog(){
+  var l=T().log||[],mine=ui.hfilter==='mine',nm=ls('yatra-user-name')||'';
+  var h='<section class="card"><h3>Your name</h3><p class="small muted" style="margin:0 0 8px">Shown next to your changes so everyone on this trip knows who did what.</p><form class="row" data-form="set-name" style="gap:8px"><input type="text" id="myname" value="'+esc(nm)+'" placeholder="e.g. Chaman" autocomplete="name"><button class="btn pri" type="submit">Save</button></form></section>';
+  h+='<div class="btns"><button class="btn sm '+(!mine?'pri':'')+'" data-act="hfilter" data-v="all">Everyone</button><button class="btn sm '+(mine?'pri':'')+'" data-act="hfilter" data-v="mine">Only mine</button></div>';
+  var list=l.filter(function(e){return !mine||e.by===me()});
+  h+='<section class="card"><div class="list">'+(list.length?list.slice(0,150).map(function(e,idx){
+    var ch=e.patch||[],open=ui.hopen===(e.id||idx);
+    return '<div class="li" data-hl="'+esc(e.id||'')+'"><div class="hav">'+esc((e.by||'?').charAt(0).toUpperCase())+'</div><div class="grow"><div class="small"><b>'+esc(e.by||'Someone')+'</b> <span class="tiny muted num">'+whenLabel(e.t)+'</span>'+(e.undone?' <span class="pill">Undone</span>':'')+'</div>'+
+      '<div class="small">'+esc(e.msg)+'</div>'+
+      (ch.length?'<div class="tiny muted">'+(open?ch.map(function(p){return esc(descChange(p))}).join('<br>'):esc(descChange(ch[0]))+(ch.length>1?' <button class="link-inline" data-act="hopen" data-id="'+esc(e.id||idx)+'">+'+(ch.length-1)+' more</button>':''))+'</div>':'')+
+      '</div>'+(e.patch&&!e.undone&&e.id?'<button class="btn sm" data-act="h-undo" data-id="'+e.id+'">Undo</button>':'')+'</div>'}).join(''):'<div class="small muted">No changes yet.</div>')+'</div></section>'+
+    '<p class="tiny muted">Undo puts things back the way they were before that change. Older changes (beyond the latest 150) can\'t be undone.</p>';
+  return h;
+}
 function vTrips(){
   return S.trips.map(function(t){var on=t.id===S.activeTripId;return '<section class="card"><h3>'+esc(t.name)+(on?' <span class="pill ok">Active</span>':'')+'</h3><div class="small muted">'+dayLabel(t.start)+' – '+dayLabel(t.end)+' · '+esc(t.travellers||'')+'</div><div class="btns" style="margin-top:10px">'+(on?'':'<button class="btn sm pri" data-act="trip-switch" data-id="'+t.id+'">Open</button>')+'<button class="btn sm" data-act="trip-edit" data-id="'+t.id+'">Edit details</button><button class="btn sm" data-act="trip-dup" data-id="'+t.id+'">Use as template</button>'+(S.trips.length>1?'<button class="btn sm ghost danger" data-act="trip-del" data-id="'+t.id+'">Delete</button>':'')+'</div></section>'}).join('')+'<button class="btn pri" data-act="trip-new">'+I.plus+'Plan a new trip</button>';
 }
@@ -779,7 +922,7 @@ function tripSheet(tr){
   var isNew=!tr;tr=tr||{name:'',subtitle:'',travellers:'',start:istDate(now()+7*86400000),end:istDate(now()+9*86400000)};
   sheet('<h2>'+(isNew?'Plan a new trip':'Trip details')+'</h2><label class="f">Trip name<input type="text" id="t_name" value="'+esc(tr.name)+'" required></label><label class="f">Route<input type="text" id="t_sub" value="'+esc(tr.subtitle)+'" placeholder="Home → Destination → Home"></label><label class="f">Who\'s travelling<input type="text" id="t_trav" value="'+esc(tr.travellers)+'"></label><div class="fgrid"><label class="f">Start<input type="date" id="t_start" value="'+esc(tr.start)+'" required></label><label class="f">End<input type="date" id="t_end" value="'+esc(tr.end)+'" required></label></div><div class="btns"><button class="btn pri" type="submit">'+(isNew?'Create trip':'Save')+'</button></div>',
   function(f){var d={name:v(f,'t_name').trim(),subtitle:v(f,'t_sub').trim(),travellers:v(f,'t_trav').trim(),start:v(f,'t_start'),end:v(f,'t_end')};if(!d.name||!d.start||!d.end||d.end<d.start)return false;
-    mutate(function(){if(isNew){var nt=Object.assign({id:uid('t'),dayTitles:{},events:[{id:uid('e'),date:d.start,time:'08:00',title:'Leave home',cat:'transport',notes:'',place:'',priority:true,verify:false,remind:30,guide:'',status:'todo'}],checklist:[{id:uid('c'),group:'Documents',text:'ID cards',done:false},{id:uid('c'),group:'Documents',text:'Tickets saved offline',done:false}],reminders:[],budget:[],contacts:[{id:uid('p'),name:'Emergency',phone:'112',note:''}],guides:[],places:[],routes:[],notes:'',log:[]},d);S.trips.push(nt);S.activeTripId=nt.id;ui.day=null}else Object.assign(tr,d)},(isNew?'Trip created: ':'Trip details edited: ')+d.name)});
+    mutate(function(){if(isNew){var nt=Object.assign({id:uid('t'),dayTitles:{},events:[{id:uid('e'),date:d.start,time:'08:00',title:'Leave home',cat:'transport',notes:'',place:'',priority:true,verify:false,remind:30,guide:'',status:'todo'}],checklist:[{id:uid('c'),group:'Documents',text:'ID cards',done:false},{id:uid('c'),group:'Documents',text:'Tickets saved offline',done:false}],reminders:[],budget:[],contacts:[{id:uid('p'),name:'Emergency',phone:'112',note:''}],guides:[],places:[],routes:[],docs:[],notes:'',log:[]},d);S.trips.push(nt);S.activeTripId=nt.id;ui.day=null}else Object.assign(tr,d)},(isNew?'Trip created: ':'Trip details edited: ')+d.name)});
 }
 function searchSheet(){
   sheet('<h2>Search</h2><input type="search" id="q" placeholder="Search plan, checklist, guides, contacts…" aria-label="Search"><div id="qres" class="search-res list"></div>',function(){return false},function(f){
@@ -793,6 +936,7 @@ function searchSheet(){
       (t.contacts||[]).forEach(function(p){if(m(p.name)||m(p.phone)||m(p.note))res.push(['Contact',p.name,p.phone,'contacts',p.id])});
       (t.reminders||[]).forEach(function(r){if(m(r.text))res.push(['Reminder',r.text,r.at.replace('T',' '),'reminders',r.id])});
       (t.routes||[]).forEach(function(r){if(m(r.title)||m(pName(r.from))||m(pName(r.to))||m(r.tips))res.push(['Route',r.title,dayLabel(r.date)+' · '+fmt12(r.time),'map',r.id])});
+      (t.docs||[]).forEach(function(d){if(m(d.title)||m(d.pnr)||m(d.train)||m(d.seats)||m(d.notes))res.push(['Document',d.title,[d.pnr,d.seats].filter(Boolean).join(' · '),'docs',d.id])});
       (t.places||[]).forEach(function(p){if(m(p.name)||m(p.query))res.push(['Place',p.name,p.query||'','map',p.id])});
       t.budget.forEach(function(b){if(m(b.label))res.push(['Budget',b.label,b.actual!=null?rupee(b.actual):'','budget',b.id])});
       $('#qres').innerHTML=res.length?res.slice(0,40).map(function(r){return '<div class="li" data-act="qgo" data-to="'+r[3]+'" data-id="'+r[4]+'" data-day="'+(r[5]||'')+'"><span class="pill">'+r[0]+'</span><div class="grow"><div class="small"><b>'+esc(r[1])+'</b></div><div class="tiny muted">'+esc(r[2])+'</div></div></div>'}).join(''):'<div class="empty">No matches.</div>';
@@ -804,6 +948,7 @@ function searchSheet(){
 var actx=null;
 function toast(msg,opt){
   opt=opt||{};var box=$('#toasts');if(!box){box=document.createElement('div');box.id='toasts';box.className='toasts';document.body.appendChild(box)}
+  while(box.children.length>=2)box.removeChild(box.firstChild);
   var el=document.createElement('div');el.className='toast'+(opt.alarm?' alarm':'');el.setAttribute('role',opt.alarm?'alert':'status');
   el.innerHTML='<div class="grow">'+(opt.alarm?'<b>Reminder</b><br>':'')+esc(msg)+'</div>';
   (opt.actions||[]).forEach(function(a){var b=document.createElement('button');b.className='btn sm';b.type='button';b.textContent=a.label;b.onclick=function(){a.fn();el.remove()};el.appendChild(b)});
@@ -864,10 +1009,25 @@ function restoreCase(clean,orig){var map={};orig.split(/\s+/).forEach(function(w
 function tidy(s){return s.replace(/^(please |can you |could you |kindly )+/i,'').replace(/^(to|that|about|for) /i,'').replace(/\b(at|on|by|for|to)\s*$/,'').replace(/\s+/g,' ').trim()}
 function cap1(s){return s?s.charAt(0).toUpperCase()+s.slice(1):s}
 var lastSnap=null;
+function dataViewCommand(q){
+  var ql=q.toLowerCase();
+  if(!/^(show|list|display|view|see|what are|what's|whats|which|tell me|give me|any|my|pending|remaining|baaki|kya kya)|\b(dikhao|dikha do|batao|bata do|list|show)\b/.test(ql))return null;
+  var w=null,v={};
+  if(/check ?list|packing|pack|items?\b|pending|remaining|baaki|saman|samaan/.test(ql)&&!/reminder|plan|schedule|step/.test(ql)){w='checklist';v.filter=/\ball\b|sab|saare/.test(ql)?'all':(/\b(done|ticked|completed|packed)\b/.test(ql)&&!/not|pending|remaining|baaki/.test(ql)?'done':'pending');var g=ql.match(/\b(baby|parent|document|booking|day 2)/);if(g)v.group=g[1]}
+  else if(/reminder|yaad/.test(ql))w='reminders';
+  else if(/budget|expense|spent|spend|kharch|money|paisa/.test(ql))w='budget';
+  else if(/contact|number|phone/.test(ql))w='contacts';
+  else if(/route|direction|map|rasta/.test(ql)){w='routes';var pw=parseWhen(q+' at 12:00');if(/today|tomorrow|day \d|\d{1,2}(st|nd|rd|th)?|kal|aaj/.test(ql))v.date=pw.date}
+  else if(/plan|schedule|itinerary|today|tomorrow|day \d|steps?|aaj|kal|program/.test(ql)){w='plan';var q2=q.replace(/\bkal\b/i,'tomorrow').replace(/\baaj\b/i,'today');if(/today|tomorrow|day \d|\d{1,2}(st|nd|rd|th)|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i.test(q2)){v.date=parseWhen(q2+' at 12:00').date}if(/pending|left|remaining|baaki/.test(ql))v.filter='pending'}
+  else if(/next|now|abhi/.test(ql))w='next';
+  if(!w)return null;v.what=w;var view=normView(v);
+  return {say:viewSummary(view),view:view};
+}
 function localCommand(raw){
   var q=raw.trim().replace(/[.!?]+$/,''),ql=q.toLowerCase(),t=T(),m,c=ctx();
   // navigation
-  if((m=ql.match(/^(open|show|go to|show me)( the)? (today|home|plan|checklist|assistant|map|routes|budget|expenses?|reminders?|guides?|contacts?|journal|notes|activity|trips|settings)\b/))){
+  var dv=dataViewCommand(q);if(dv)return dv;
+  if((m=ql.match(/^(open|go to)( the)? (today|home|plan|checklist|assistant|map|routes|budget|expenses?|reminders?|guides?|contacts?|journal|notes|activity|trips|settings)\b/))){
     var w=m[3],map={today:['home'],home:['home'],plan:['plan'],checklist:['checklist'],assistant:['assistant'],map:['more','map'],routes:['more','map'],budget:['more','budget'],expense:['more','budget'],expenses:['more','budget'],reminder:['more','reminders'],reminders:['more','reminders'],guide:['more','guides'],guides:['more','guides'],contact:['more','contacts'],contacts:['more','contacts'],journal:['more','notes'],notes:['more','notes'],activity:['more','log'],trips:['more','trips'],settings:['more','settings']}[w];
     go(map[0],map[1]);return {say:'Opening '+w+'.'};
   }
@@ -884,7 +1044,7 @@ function localCommand(raw){
   // call
   if((m=ql.match(/^(call|phone|dial|number (of|for))( the)? (.+)$/))){var p=fuzzy(m[4],t.contacts||[],function(x){return x.name+' '+x.note});if(p&&p.phone)return {say:p.name+': '+p.phone.split('').join(' ')+'.',show:p.name+': '+p.phone,tel:p.phone};if(p)return {say:'There is no number saved for '+p.name+' yet.'}}
   // undo
-  if(/^(undo|cancel that|revert)/.test(ql)){if(lastSnap){S=JSON.parse(lastSnap);lastSnap=null;log('Voice: undid last change');save();render();return {say:'Undone.'}}return {say:'Nothing to undo.'}}
+  if(/^(undo|cancel that|revert)/.test(ql)){var le=lastMine();if(le){undoEntry(le);return {say:'Undone: '+le.msg.replace(/^Voice: /,'')+'.'}}return {say:'Nothing of yours to undo.'}}
   // save contact number
   if((m=ql.match(/^(save|add|set)( the)? (.+?)('?s)? (number|phone|contact)( number)?( is| as)? ([+\d][\d\s-]{5,})$/))){var nm=m[3].trim(),ph=m[8].replace(/\s+/g,' ').trim(),pc=fuzzy(nm,t.contacts||[],function(x){return x.name});
     mutate(function(){if(pc)pc.phone=ph;else t.contacts.push({id:uid('p'),name:cap1(nm),phone:ph,note:'Added by voice'})},'Voice: saved number for '+(pc?pc.name:nm));return {say:'Saved '+ph+' for '+(pc?pc.name:cap1(nm))+'.',changed:true}}
@@ -945,7 +1105,7 @@ function speakOut(text){
   try{if(window.speechSynthesis){speechSynthesis.cancel();var u=new SpeechSynthesisUtterance(plain);u.lang=/[\u0900-\u097f]/.test(plain)?'hi-IN':'en-IN';u.rate=1;speechSynthesis.speak(u)}}catch(e){}
 }
 function stopSpeaking(){try{if(caps.tts&&caps.tts.active())caps.tts.stop().catch(function(){})}catch(e){}try{window.speechSynthesis&&speechSynthesis.cancel()}catch(e){}}
-var VOICE_EX=['Remind me to call the hotel at 6 pm','Spent 250 on auto','Add baby sunscreen to checklist','Mark diapers packed','We are running 30 minutes late','Save taxi driver number 98450 12345','What\'s next?','Add lunch at Annaprasadam at 1 pm on 26th'];
+var VOICE_EX=['Show my pending checklist','Show tomorrow\'s plan','Remind me to call the hotel at 6 pm','Spent 250 on auto','Add baby sunscreen to checklist','Mark diapers packed','We are running 30 minutes late','Save taxi driver number 98450 12345','What\'s next?','Add lunch at Annaprasadam at 1 pm on 26th'];
 function voiceHTML(){
   var st=vState,live=(st.text+(st.partial?' '+st.partial:'')).trim();
   return '<div class="vpanel" role="dialog" aria-modal="true" aria-label="Voice assistant"><div class="grab"></div>'+
@@ -953,7 +1113,7 @@ function voiceHTML(){
    (micAvailable()?'<button class="vmic'+(st.listening?' on':'')+'" data-act="v-mic" aria-label="'+(st.listening?'Stop and send':'Start speaking')+'">'+I.mic+'</button><div class="vstatus">'+(st.listening?'Listening… tap to send':'Tap and speak a command')+'</div>':'<p class="small muted" style="margin:0">Speech input isn\'t available in this browser. Type the command instead; it works the same way.</p>')+
    '<div class="vtext'+(live?'':' muted')+'" id="vlive">'+(live?esc(live):'Your words appear here')+'</div>'+
    '<form class="row" data-form="v-type" style="gap:8px"><input type="text" id="vtype" placeholder="Or type a command" aria-label="Type a command" autocomplete="off"><button class="btn pri" type="submit">Go</button></form>'+
-   (st.reply?'<div class="vreply" id="vreply">'+md(st.reply)+'</div>':'<div class="vreply muted" id="vreply" style="display:none"></div>')+
+   (st.reply?'<div class="vreply" id="vreply">'+md(st.reply)+'</div>'+viewHTML(st.view):'<div class="vreply muted" id="vreply" style="display:none"></div>')+
    '<div class="btns">'+(st.tel?'<a class="btn sm pri" href="tel:'+esc(st.tel.replace(/\s/g,''))+'">'+I.phone+'Call '+esc(st.tel)+'</a>':'')+(st.canUndo?'<button class="btn sm" data-act="v-undo">Undo</button>':'')+(st.reply?'<button class="btn sm ghost" data-act="v-stopspeak">Stop speaking</button>':'')+'</div>'+
    (st.reply?'':'<div class="tiny muted">Try saying</div><div class="chips">'+VOICE_EX.map(function(x){return '<button class="chip" data-act="v-ex" data-v="'+esc(x)+'">'+esc(x)+'</button>'}).join('')+'</div>')+
    '<p class="tiny muted" style="margin:0">'+(caps.sample?AINAME+' understands your words, including Hindi or Hinglish, and makes the change. Every change is in Activity and can be undone.':'Understands common English commands. Every change is in Activity and can be undone.')+'</p></div>';
@@ -1004,21 +1164,21 @@ function finishListening(reason){
 }
 function voiceMsg(msg){vState.reply=msg;voiceRender()}
 function runCommand(text){
-  text=(text||'').trim();if(!text)return;if(vState.listening){vState.listening=false;listenStop(true)}vState.text=text;vState.reply='';vState.tel=null;vState.canUndo=false;
+  text=(text||'').trim();if(!text)return;if(vState.listening){vState.listening=false;listenStop(true)}vState.text=text;vState.reply='';vState.view=null;vState.tel=null;vState.canUndo=false;
   var before=JSON.stringify(S);
   // quick local commands first: undo, call, navigation answer instantly without the AI
-  var quick=/^(undo|cancel that|revert|call |phone |dial |open |show |go to )/i.test(text);
+  var quick=/^(undo|cancel that|revert|call |phone |dial |open |go to )/i.test(text)||!!dataViewCommand(text);
   if(quick||!caps.sample){
     var res=localCommand(text);
-    if(res){if(res.changed)lastSnap=before;vState.reply=res.show||res.say;vState.tel=res.tel||null;vState.canUndo=!!res.changed;
-      chat.push({role:'user',content:'(voice) '+text});chat.push({role:'assistant',content:res.show||res.say});ss(CK,chat);
+    if(res){if(res.changed)lastSnap=before;vState.reply=res.show||res.say;vState.view=res.view||null;vState.tel=res.tel||null;vState.canUndo=!!res.changed;
+      chat.push({role:'user',content:'(voice) '+text});chat.push({role:'assistant',content:res.show||res.say,view:res.view||undefined});ss(CK,chat);
       if(!$('#voicewrap'))return;voiceRender();speakOut(res.say);return}
     if(!caps.sample){vState.reply='Sorry, I didn\'t get that. Try one of the examples, like "Remind me to call the hotel at 6 pm".';voiceRender();speakOut(vState.reply);return}
   }
   vState.reply='Thinking…';voiceRender();
   ask(text,function(partial){var el=$('#vreply');if(el){el.style.display='';el.className='vreply';el.innerHTML=md(partial||'')}},true).then(function(reply){
     var after=JSON.stringify(S),changed=after!==before;if(changed)lastSnap=before;
-    vState.reply=reply||'Done.';vState.canUndo=changed;if($('#voicewrap')){voiceRender();speakOut(vState.reply)}
+    var lastMsg=chat[chat.length-1];vState.view=lastMsg&&lastMsg.view||null;vState.reply=reply||'Done.';vState.canUndo=changed;if($('#voicewrap')){voiceRender();speakOut(vState.reply)}
   });
 }
 
@@ -1036,6 +1196,11 @@ document.addEventListener('click',function(ev){
   case 'more-sub':go('more',val||null);break;
   case 'search':searchSheet();break;
   case 'close-sheet':closeSheet();break;
+  case 'doc-edit':var dd=(t.docs||[]).filter(function(x){return x.id===id})[0];if(dd)docSheet(dd);break;
+  case 'doc-del':var dd2=(t.docs||[]).filter(function(x){return x.id===id})[0];closeSheet();if(dd2)confirmSheet('Remove "'+dd2.title+'" from the trip?','Remove',function(){mutate(function(){t.docs=t.docs.filter(function(x){return x!==dd2})},'Removed document: '+dd2.title)});break;
+  case 'hfilter':ui.hfilter=val;render();break;
+  case 'hopen':ui.hopen=ui.hopen===id?null:id;render();break;
+  case 'h-undo':var he=findEntry(id);if(he&&he.patch){var warn=laterConflict(he);confirmSheet('Undo "'+he.msg+'" by '+(he.by||'Someone')+'?'+(warn?' Some of these items were changed again later; undo will replace those later edits too.':''),'Undo',function(){undoEntry(he);toast('Undone')})}break;
   case 'voice-open':voiceOpen(true);break;
   case 'v-mic':if(vState.listening)listenStop();else listenStart();break;
   case 'v-close':voiceClose();break;
@@ -1101,6 +1266,7 @@ document.addEventListener('submit',function(ev){
   var f=ev.target;if(f.closest('#sheetwrap'))return;ev.preventDefault();
   var k=f.getAttribute('data-form');
   if(k==='ask'){var q=$('#askbox').value;ask(q)}
+  if(k==='set-name'){var nv=$('#myname').value.trim();if(nv){ls('yatra-user-name',nv);toast('Saved. Your changes will show as '+nv);render()}}
   if(k==='v-type'){var vt=$('#vtype').value;runCommand(vt)}
   if(k==='cl-add'){var inp=f.querySelector('input'),tx=inp.value.trim(),g=f.getAttribute('data-group');if(tx){mutate(function(){T().checklist.push({id:uid('c'),group:g,text:tx,done:false})},'Checklist added: '+tx);var ni=$('[data-group="'+g.replace(/"/g,'\\"')+'"] input');if(ni)ni.focus()}}
 });
@@ -1110,8 +1276,9 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Enter'&&!e.shiftKey&&e.target&&e.target.id==='askbox'){e.preventDefault();ask(e.target.value)}
 });
 var notesT=null;
-document.addEventListener('input',function(e){if(e.target.id==='notesbox'){clearTimeout(notesT);var val=e.target.value;$('#notesst').textContent='Saving…';notesT=setTimeout(function(){T().notes=val;S.updatedAt=Date.now();ls(LS,S);unsynced=true;scheduleSync();var st=$('#notesst');if(st)st.textContent='Saved'},700)}});
+document.addEventListener('input',function(e){if(e.target.id==='notesbox'){clearTimeout(notesT);var val=e.target.value;$('#notesst').textContent='Saving…';notesT=setTimeout(function(){T().notes=val;save();var st=$('#notesst');if(st)st.textContent='Saved'},700)}});
 document.addEventListener('change',function(e){
+  if(e.target.id==='docfile'){var df=e.target.files[0];e.target.value='';if(df){if(df.size>5*1048576){toast('That file is larger than 5 MB');return}docSheet(null,df)}return}
   if(e.target.id!=='importf')return;var file=e.target.files[0];if(!file)return;
   file.text().then(function(txt){var d=JSON.parse(txt);if(WEB&&webEmpty&&d.trips){S=d;webEmpty=false;save();render();toast('Trip restored and shared');return}var add=d.trips?d.trips:(d.events?[d]:null);if(!add)throw new Error('Not a Yatra Saathi backup');
     mutate(function(){add.forEach(function(tr){if(S.trips.some(function(x){return x.id===tr.id}))tr.id=uid('t');S.trips.push(tr)})},'Restored '+add.length+' trip(s) from backup');toast(add.length+' trip(s) added. Find them in Trips.')}).catch(function(err){toast('Couldn\'t read that file: '+err.message)});
@@ -1133,6 +1300,7 @@ document.addEventListener('touchstart',function(e){if(ui.tab!=='plan'||sheetOpen
 document.addEventListener('touchend',function(e){if(tx===null)return;var dx=e.changedTouches[0].clientX-tx,dy=e.changedTouches[0].clientY-ty;tx=null;if(Math.abs(dx)<70||Math.abs(dy)>Math.abs(dx)*0.6)return;
   var dates=[];sorted().forEach(function(ev){if(dates.indexOf(ev.date)<0)dates.push(ev.date)});var i=dates.indexOf(ui.day)+(dx<0?1:-1);if(i<0||i>=dates.length)return;ui.day=dates[i];render();saveUI();var on=$('.days button.on');if(on)on.scrollIntoView({inline:'center',block:'nearest'});window.scrollTo(0,0)},{passive:true});
 /* ---------- boot ---------- */
+resetBase();
 render();
 if(ui.scroll){setTimeout(function(){window.scrollTo(0,ui.scroll)},30)}
 setInterval(tick,20000);setTimeout(tick,1500);

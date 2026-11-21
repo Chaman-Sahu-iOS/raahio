@@ -2,6 +2,10 @@
   "name": "raahio",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "python3 scripts/build.py",
+    "deploy": "npm install && npx netlify-cli deploy --prod"
+  },
   "dependencies": {
     "@netlify/blobs": "^11.1.9"
   }
